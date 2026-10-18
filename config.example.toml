@@ -1,0 +1,4 @@
+# このファイルを config.toml という名前で clipedit.exe と同じフォルダに置くと設定が使われます。
+# 書ける修飾キー: Ctrl / Alt / Shift / Win（1つ以上必要）
+# 書けるキー: A〜Z、0〜9、F1〜F24、Space、Insert
+hotkey = "Ctrl+Alt+V"

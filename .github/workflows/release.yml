@@ -1,0 +1,94 @@
+# v で始まるタグ（例: v0.1.0）を push すると、配布用 zip を作って GitHub Release に上げる（監査 S17）。
+# zip と exe には、どのリポジトリのどのワークフローで作ったかの証明（artifact attestation。公開リポジトリのときだけ）を付け、
+# SHA256SUMS.txt も一緒に上げる。利用者が確かめる手順はリリースノートに書く。
+# 外部の Action はコミットのハッシュで固定する（ci.yml と同じ。上げるときはハッシュと横の版を一緒に書き換える）。
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write      # Release を作る
+      id-token: write      # attestation の署名（Sigstore）に使う
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master 2026-09-12
+        with:
+          toolchain: 1.99.0
+          components: clippy, rustfmt
+
+      # 配布物は毎回まっさらな状態からビルドする（キャッシュを汚された場合に、それが配布物へ入らないように rust-cache は使わない）
+
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-audit@0.22.2,cargo-deny@0.20.2
+
+      - name: タグと Cargo.toml の版が同じか
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ($env:TAG -ne "v$version") { throw "タグ $env:TAG と Cargo.toml の版 $version が違う" }
+
+      - name: 書式・clippy・テスト・負債の兆候・ライセンス文
+        shell: pwsh
+        run: pwsh -NoProfile -File tools/check-all.ps1
+
+      - name: 配布用 zip とチェックサムを作る（exe の検査も含む）
+        shell: pwsh
+        run: pwsh -NoProfile -File tools/make-dist.ps1
+
+      # GitHub Free / Pro / Team では、attestation は公開リポジトリでしか使えないので、非公開のときは飛ばす
+      - name: zip と exe に、作った場所の証明を付ける
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            target/dist/ClipEdit-*-win64.zip
+            target/dist/ClipEdit/clipedit.exe
+
+      - name: GitHub Release を作る
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          $zip = (Get-ChildItem target/dist/ClipEdit-*-win64.zip).Name
+          # attestation を付けたとき（公開リポジトリ）だけ、その確かめ方を書く
+          $attest = if ($env:PRIVATE -eq 'true') { '' } else { @"
+          2. GitHub CLI があれば、このリポジトリの GitHub Actions で作ったものかを確かめられる
+             ``````powershell
+             gh attestation verify $zip --repo $env:REPO
+             ``````
+          "@ }
+          $notes = @"
+          ## ダウンロードしたものが本物か確かめる
+
+          1. ``$zip`` と ``SHA256SUMS.txt`` を同じフォルダに置き、zip をそのフォルダに展開する（``ClipEdit`` フォルダができる）。そのフォルダで PowerShell を開いて次を実行し、2行とも True なら、zip も中の exe もこのページのものと同じ
+             ``````powershell
+             Get-Content SHA256SUMS.txt | ForEach-Object { `$h, `$f = `$_ -split '  '; '{0} {1}' -f `$f, ((Get-FileHash `$f).Hash.ToLower() -eq `$h) }
+             ``````
+          $attest
+
+          exe には署名がないため、初めて起動するときに「WindowsによってPCが保護されました」と出ることがあります。上の手順で確かめてから、「詳細情報」→「実行」で起動してください。
+          "@
+          gh release create $env:TAG "target/dist/$zip" target/dist/SHA256SUMS.txt --repo $env:REPO --title "ClipEdit $env:TAG" --notes $notes

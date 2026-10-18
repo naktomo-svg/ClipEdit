@@ -1,0 +1,57 @@
+# 手元の tools/check-all.ps1 と同じ検査と、配布用ビルドの検査を流す（台帳 D13）。
+# 実機のクリップボード・画面を使う --ignored のテストは流さない（台帳 D12）。手元で check-all.ps1 -Hardware を使う。
+# 外部の Action はコミットのハッシュで固定する。上げるときはハッシュと横の版を一緒に書き換える。
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # 手元と同じ版に固定する（版が変わると clippy の警告の数が変わり、負債の基準値と比べられなくなる）
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master 2026-09-12
+        with:
+          toolchain: 1.99.0
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # debt-scan.ps1 が既知の脆弱性と依存の検査に使う
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-audit@0.22.2,cargo-deny@0.20.2
+
+      - name: 書式・clippy・テスト・負債の兆候・ライセンス文
+        shell: pwsh
+        run: pwsh -NoProfile -File tools/check-all.ps1
+
+      - name: 配布用ビルドと exe の検査
+        shell: pwsh
+        run: pwsh -NoProfile -File tools/build-release.ps1
+
+      - name: 負債の報告を残す
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: debt-report
+          path: target/debt/report-*.md
+          if-no-files-found: ignore
+          retention-days: 30

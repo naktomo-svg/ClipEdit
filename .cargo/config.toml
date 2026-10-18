@@ -1,0 +1,5 @@
+# 監査 S2: C ランタイムを静的リンクし、exe と同じフォルダの vcruntime140.dll を読まないようにする
+#         （VC++ 再頒布パッケージが無い PC でも起動できる）
+# 監査 S6: Control Flow Guard を有効にする
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "control-flow-guard"]
