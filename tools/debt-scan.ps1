@@ -19,12 +19,14 @@ $metrics = [ordered]@{}
 function Add-Metric($name, $value, $better, $label) {
     $metrics[$name] = [ordered]@{ value = $value; better = $better; label = $label }
 }
-$sources = Get-ChildItem src -Filter *.rs
+$sources = Get-ChildItem src -Filter *.rs -Recurse
+# リポジトリのルートからの相対パス（区切りは /）。src/editor/dpi.rs のように表す
+function Get-RepoPath($file) { $file.FullName.Substring((Get-Location).Path.Length + 1) -replace '[\\]', '/' }
 
 # 1. clippy の厳しめの警告（種類ごと。bin とテストで重なる分は場所で重複を除く）
 $seen = @{}
 $byLint = @{}
-cargo clippy --all-targets --message-format=json --quiet -- -W clippy::pedantic 2>$null | ForEach-Object {
+cargo clippy --locked --all-targets --message-format=json --quiet -- -W clippy::pedantic 2>$null | ForEach-Object {
     # JSON でない行（ビルドの進行表示など）は飛ばす
     $j = try { $_ | ConvertFrom-Json } catch { $null }
     if ($j -and $j.reason -eq 'compiler-message' -and $j.message.level -eq 'warning' -and $j.message.code) {
@@ -52,7 +54,7 @@ Add-Metric 'markers' $markers.Count 'lower' 'TODO / FIXME などの印'
 
 # 4. ファイルの大きさ
 $lines = @{}
-foreach ($f in $sources) { $lines[$f.Name] = (Get-Content $f.FullName).Count }
+foreach ($f in $sources) { $lines[(Get-RepoPath $f)] = (Get-Content $f.FullName).Count }
 $largest = $lines.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 1
 Add-Metric 'largest_file_lines' $largest.Value 'lower' "いちばん大きいファイルの行数（$($largest.Name)）"
 Add-Metric 'files_over_500' @($lines.Values | Where-Object { $_ -gt 500 }).Count 'lower' '500 行を超えるファイル'
@@ -71,7 +73,7 @@ try {
 } catch { }
 Add-Metric 'dep_updates' $updates 'info' '更新できる依存ライブラリ'
 
-$dupNames = cargo tree -d --prefix none --format '{p}' 2>$null |
+$dupNames = cargo tree --locked -d --prefix none --format '{p}' 2>$null |
     ForEach-Object { if ($_ -match '^(\S+) v(\S+)') { "$($Matches[1])@$($Matches[2])" } } |
     Sort-Object -Unique | ForEach-Object { ($_ -split '@')[0] } | Group-Object | Where-Object Count -gt 1
 Add-Metric 'dep_duplicates' @($dupNames).Count 'lower' "版が重複した依存ライブラリ（$(@($dupNames).Name -join ', ')）"
@@ -117,7 +119,7 @@ foreach ($d in $docs) {
 }
 # README のファイル構成表に、すべてのソース・ツール・ビルド設定が載っているか（台帳 D27）
 $readme = Get-Content README.md -Raw
-$listed = @(Get-ChildItem src -Filter *.rs | ForEach-Object { "src/$($_.Name)" }) +
+$listed = @($sources | ForEach-Object { (Get-RepoPath $_) }) +
     @(Get-ChildItem tools -File | ForEach-Object { "tools/$($_.Name)" }) +
     @('build.rs', 'deny.toml', 'assets/clipedit.manifest')
 foreach ($path in $listed) {

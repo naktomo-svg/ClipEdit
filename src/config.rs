@@ -46,7 +46,7 @@ fn describe_error(text: &str, error: &toml::de::Error) -> String {
 
 /// 設定ファイルを読む。ファイルが無ければ既定値、壊れていれば既定値と警告文を返す。
 pub fn load(path: &Path) -> (Config, Option<String>) {
-    match read_limited(path) {
+    match read_limited(path, MAX_SIZE) {
         Ok(None) => (
             Config::default(),
             Some(format!(
@@ -76,14 +76,14 @@ pub fn load(path: &Path) -> (Config, Option<String>) {
     }
 }
 
-/// `MAX_SIZE` までのファイルを UTF-8 として読む。それより大きければ `Ok(None)`。
-fn read_limited(path: &Path) -> std::io::Result<Option<String>> {
+/// `max` バイトまでのファイルを UTF-8 として読む。それより大きければ `Ok(None)`。
+pub(crate) fn read_limited(path: &Path, max: u64) -> std::io::Result<Option<String>> {
     use std::io::Read;
     let mut bytes = Vec::new();
     std::fs::File::open(path)?
-        .take(MAX_SIZE + 1)
+        .take(max + 1)
         .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_SIZE {
+    if bytes.len() as u64 > max {
         return Ok(None);
     }
     String::from_utf8(bytes)
@@ -91,12 +91,17 @@ fn read_limited(path: &Path) -> std::io::Result<Option<String>> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
-/// exe と同じフォルダの config.toml。
-pub fn default_path() -> PathBuf {
+/// exe と同じフォルダの name。exe の場所が分からなければ name だけ。
+pub(crate) fn next_to_exe(name: &str) -> PathBuf {
     std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("config.toml")))
-        .unwrap_or_else(|| PathBuf::from("config.toml"))
+        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
+        .unwrap_or_else(|| PathBuf::from(name))
+}
+
+/// exe と同じフォルダの config.toml。
+pub fn default_path() -> PathBuf {
+    next_to_exe("config.toml")
 }
 
 #[cfg(test)]
@@ -112,6 +117,15 @@ mod tests {
             std::fs::write(&path, content).unwrap();
         }
         path
+    }
+
+    #[test]
+    fn next_to_exe_is_in_the_exe_folder() {
+        assert!(next_to_exe("config.toml").ends_with("config.toml"));
+        assert_eq!(
+            next_to_exe("x").parent(),
+            std::env::current_exe().unwrap().parent()
+        );
     }
 
     #[test]

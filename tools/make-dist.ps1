@@ -27,6 +27,12 @@ $files = [ordered]@{
 foreach ($f in $files.GetEnumerator()) {
     Copy-Item (Join-Path $root $f.Value) (Join-Path $folder $f.Key)
 }
+# お気に入りの見本（展開してすぐ Ctrl+1 で試せるように、exe の隣の favorites に入れる）
+$samples = @(Get-ChildItem (Join-Path $root 'assets/favorites') -Filter *.txt)
+if ($samples.Count -eq 0) { throw 'assets/favorites にお気に入りの見本がありません' }
+$favorites = Join-Path $folder 'favorites'
+New-Item -ItemType Directory -Force $favorites | Out-Null
+$samples | Copy-Item -Destination $favorites
 # exe に入っている依存ライブラリの著作権表示とライセンス文（台帳 D32）
 pwsh -NoProfile -File (Join-Path $PSScriptRoot 'make-notices.ps1') -Out (Join-Path $folder 'THIRD-PARTY-NOTICES.txt')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

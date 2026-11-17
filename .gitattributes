@@ -1,0 +1,7 @@
+# 公開リポジトリへ写すとき（tools/publish-public.ps1 の git archive）に入れない、内部の文書（監査 S21）。
+# 設計・計画・監査報告・負債の台帳とその基準値・機能のバックログは、開発用の非公開リポジトリだけに置く
+/docs/superpowers export-ignore
+/docs/security-audit-*.md export-ignore
+/docs/tech-debt.md export-ignore
+/docs/debt-baseline.json export-ignore
+/docs/backlog.md export-ignore

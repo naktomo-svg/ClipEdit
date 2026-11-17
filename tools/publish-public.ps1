@@ -27,11 +27,31 @@ if ($LASTEXITCODE -ne 0) { throw "タグ $tag のあとで exe に入るもの�
 $source = git rev-parse --short HEAD
 
 # 公開側の作業用の複製は、前回の残り（push していないコミットやタグ）が混ざらないよう毎回作り直す。
-# 消すのは、このスクリプトが作った複製（origin が公開リポジトリ）のときだけ
+# 消すのは、このスクリプトが作った複製で、失うものがないときだけ（監査 S22）
 $url = "https://github.com/$Repo.git"
+$marker = 'clipedit-publish'   # 複製の .git に置く印。中身はこのスクリプトが作ったコミット
+
+# $dir を消してよいか。だめなら理由を投げる
+function Assert-SafeToRemove([string]$dir, [string]$url, [string]$marker) {
+    $full = [IO.Path]::GetFullPath($dir).TrimEnd('\')
+    # git -C は親のリポジトリも見るので、$dir 自身が複製のいちばん上であることを確かめる
+    $top = git -C $full rev-parse --show-toplevel 2>$null
+    if (-not $top -or [IO.Path]::GetFullPath($top).TrimEnd('\') -ne $full) { throw "$full は git の複製のいちばん上ではないので消さない" }
+    $existing = git -C $full remote get-url origin 2>$null
+    if ($existing -ne $url) { throw "$full は公開リポジトリの複製ではないので消さない（origin: $existing）" }
+    $markerPath = Join-Path $full ".git/$marker"
+    if (-not (Test-Path -LiteralPath $markerPath)) { throw "$full はこのスクリプトが作った複製ではないので消さない（.git/$marker がない）" }
+    if (git -C $full status --porcelain) { throw "$full に変更が残っているので消さない" }
+    if (git -C $full stash list) { throw "$full に stash が残っているので消さない" }
+    # push していないコミットは、このスクリプトが前回作った1つだけなら消してよい
+    $made = (Get-Content -LiteralPath $markerPath -Raw).Trim()
+    $unpushed = @(git -C $full rev-list --branches --tags --not --remotes)
+    $others = @($unpushed | Where-Object { $_ -ne $made })
+    if ($others.Count) { throw "$full に push していないコミットが $($others.Count) 個あるので消さない" }
+}
+
 if (Test-Path $PublicDir) {
-    $existing = git -C $PublicDir remote get-url origin 2>$null
-    if ($existing -ne $url) { throw "$PublicDir は公開リポジトリの複製ではないので消さない（origin: $existing）" }
+    Assert-SafeToRemove $PublicDir $url $marker
     Remove-Item $PublicDir -Recurse -Force
 }
 git clone -q $url $PublicDir 2>$null
@@ -46,11 +66,17 @@ $zip = Join-Path ([IO.Path]::GetTempPath()) "clipedit-publish-$source.zip"
 git archive --format=zip -o $zip HEAD
 Expand-Archive $zip -DestinationPath $PublicDir
 Remove-Item $zip
+# 内部の文書は .gitattributes の export-ignore で外している。外れていなければ止める（監査 S21）
+$internal = @('docs/superpowers', 'docs/security-audit-*.md', 'docs/tech-debt.md', 'docs/debt-baseline.json', 'docs/backlog.md')
+$leaked = @($internal | Where-Object { Test-Path (Join-Path $PublicDir $_) })
+if ($leaked.Count) { throw "公開しない文書が入っている: $($leaked -join ', ')（.gitattributes を確かめる）" }
 
 $id = @('-c', "user.name=$AuthorName", '-c', "user.email=$AuthorEmail")
 git -C $PublicDir add -A
 git -C $PublicDir @id commit -q -m "ClipEdit $tag" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 git -C $PublicDir @id tag -a $tag -m "ClipEdit $tag"
+# 次に実行したとき、この複製とこのコミットを消してよいと分かるように印を残す
+Set-Content -LiteralPath (Join-Path $PublicDir ".git/$marker") -Value (git -C $PublicDir rev-parse HEAD)
 "公開側に写した: $PublicDir（元: $source、タグ: $tag）"
 git -C $PublicDir log --format='%h %an <%ae> %s' -1
 git -C $PublicDir show --stat --format='' HEAD | Select-Object -Last 1

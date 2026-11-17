@@ -15,18 +15,42 @@ pub fn command_line(exe: &Path) -> String {
     format!("\"{}\"", exe.display())
 }
 
-/// Run キーの値 value が exe を起動するものか。
+/// Run キーの値 value が exe を起動するものか。前後の空白と、パス全体を囲む引用符は無視する。
+/// 引数の付いた値は、ClipEdit が書く値ではないので当てはまらない（監査 S38）。
 fn points_to(value: &str, exe: &Path) -> bool {
-    value.to_lowercase() == command_line(exe).to_lowercase()
+    let value = value.trim();
+    let path = value
+        .strip_prefix('"')
+        .and_then(|v| v.strip_suffix('"'))
+        .unwrap_or(value);
+    path.to_lowercase() == exe.display().to_string().to_lowercase()
 }
 
-/// Run キーに、今動いている exe が登録されているか。
-/// exe を移動した後の古い登録は「無効」と扱い、メニューから選び直せば今のパスで登録し直す。
-pub fn is_enabled() -> bool {
-    let Ok(exe) = std::env::current_exe() else {
-        return false;
-    };
-    read_value().is_some_and(|value| points_to(&value, &exe))
+/// Run キーの登録の状態。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum State {
+    /// 登録がない
+    Off,
+    /// 今動いている exe が登録されている
+    On,
+    /// ほかの場所（exe を移動する前など）の exe が登録されている。メニューにそう出して、
+    /// 気づかないまま残らないようにする（監査 S23）。選び直せば今のパスで登録し直す
+    Elsewhere,
+}
+
+/// Run キーの値 value（なければ None）が、exe から見てどの状態か。
+fn state_of(value: Option<&str>, exe: Option<&Path>) -> State {
+    match (value, exe) {
+        (None, _) => State::Off,
+        (Some(value), Some(exe)) if points_to(value, exe) => State::On,
+        (Some(_), _) => State::Elsewhere,
+    }
+}
+
+/// 今の Run キーの登録の状態。
+pub fn state() -> State {
+    let exe = std::env::current_exe().ok();
+    state_of(read_value().as_deref(), exe.as_deref())
 }
 
 fn read_value() -> Option<String> {
@@ -139,15 +163,55 @@ mod tests {
         assert!(!points_to("", exe));
     }
 
+    // 移動前のパスの登録は、登録なしと区別する（監査 S23）
+    #[test]
+    fn state_tells_other_path_from_no_registration() {
+        let exe = Path::new(r"C:\Tools\ClipEdit\clipedit.exe");
+        assert_eq!(state_of(None, Some(exe)), State::Off);
+        assert_eq!(
+            state_of(Some(r#""C:\Tools\ClipEdit\clipedit.exe""#), Some(exe)),
+            State::On
+        );
+        assert_eq!(
+            state_of(Some(r#""C:\Users\me\Downloads\clipedit.exe""#), Some(exe)),
+            State::Elsewhere
+        );
+        assert_eq!(
+            state_of(Some(r#""C:\Tools\ClipEdit\clipedit.exe""#), None),
+            State::Elsewhere,
+            "自分の場所が分からなくても、登録があることは出す"
+        );
+    }
+
+    // 監査 S38: 引用符のない今のパス・前後の空白・大文字小文字の違いは、同じ exe として扱う
+    #[test]
+    fn same_exe_written_differently_is_on() {
+        let exe = Path::new(r"C:\Tools\ClipEdit\clipedit.exe");
+        for value in [
+            r"C:\Tools\ClipEdit\clipedit.exe",
+            r#"  "C:\TOOLS\ClipEdit\CLIPEDIT.EXE"  "#,
+        ] {
+            assert_eq!(state_of(Some(value), Some(exe)), State::On, "{value}");
+        }
+        assert_eq!(
+            state_of(
+                Some(r#""C:\Tools\ClipEdit\clipedit.exe" --hidden"#),
+                Some(exe)
+            ),
+            State::Elsewhere,
+            "引数付きは、ClipEdit が書く値ではない"
+        );
+    }
+
     // 実際のレジストリを書き換えるので通常は実行しない（終わったら元の値に戻す）
     #[test]
     #[ignore = "実際の自動起動の設定（レジストリ）を書き換える"]
-    fn stale_registration_is_not_enabled() {
+    fn stale_registration_is_shown_as_elsewhere() {
         let _restore = RestoreRunValue::save();
         write_value("\"C:\\old\\clipedit.exe\"").unwrap();
-        assert!(!is_enabled(), "古いパスの登録");
+        assert_eq!(state(), State::Elsewhere, "古いパスの登録");
         set(true).unwrap();
-        assert!(is_enabled(), "選び直すと今のパスで登録される");
+        assert_eq!(state(), State::On, "選び直すと今のパスで登録される");
     }
 
     // 登録していないときにオフにしても、エラーにしない
@@ -157,7 +221,7 @@ mod tests {
         let _restore = RestoreRunValue::save();
         assert_eq!(set(false), Ok(()));
         assert_eq!(set(false), Ok(()), "登録が無い状態でオフにする");
-        assert!(!is_enabled());
+        assert_eq!(state(), State::Off);
     }
 
     // テストが途中で失敗しても、Run キーは元の値に戻る（台帳 D24）

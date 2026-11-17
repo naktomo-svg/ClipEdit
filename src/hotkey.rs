@@ -21,11 +21,11 @@ pub fn parse(text: &str) -> Result<HotKey, String> {
             "shift" => mods |= MOD_SHIFT.0,
             "win" => mods |= MOD_WIN.0,
             "" => return Err(format!("ホットキー \"{text}\" の書き方が正しくありません")),
-            key => {
+            _ => {
                 if vk.is_some() {
                     return Err(format!("ホットキー \"{text}\" にキーが2つ以上あります"));
                 }
-                vk = Some(parse_key(key)?);
+                vk = Some(parse_key(part)?);
             }
         }
     }
@@ -38,6 +38,12 @@ pub fn parse(text: &str) -> Result<HotKey, String> {
     Ok(HotKey { mods, vk })
 }
 
+/// 名前のあるキー（仮想キーコード）。`parse_key` と `Display` が同じ表を使う。
+const NAMED_KEYS: [(&str, u32); 2] = [("Space", 0x20), ("Insert", 0x2D)];
+/// F1〜F24 の仮想キーコードの範囲（F1 の値と、キーの数）。
+const VK_F1: u32 = 0x70;
+const F_KEYS: u32 = 24;
+
 fn parse_key(key: &str) -> Result<u32, String> {
     let upper = key.to_ascii_uppercase();
     let bytes = upper.as_bytes();
@@ -45,15 +51,15 @@ fn parse_key(key: &str) -> Result<u32, String> {
         return Ok(bytes[0] as u32);
     }
     if let Some(n) = upper.strip_prefix('F').and_then(|n| n.parse::<u32>().ok())
-        && (1..=24).contains(&n)
+        && (1..=F_KEYS).contains(&n)
     {
-        return Ok(0x70 + n - 1); // VK_F1 = 0x70
+        return Ok(VK_F1 + n - 1);
     }
-    match upper.as_str() {
-        "SPACE" => Ok(0x20),
-        "INSERT" => Ok(0x2D),
-        _ => Err(format!("不明なキー \"{key}\" です")),
-    }
+    NAMED_KEYS
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(key))
+        .map(|&(_, vk)| vk)
+        .ok_or_else(|| format!("不明なキー \"{key}\" です"))
 }
 
 /// 表示用の決まった書き方（"Ctrl+Alt+Shift+Win+キー" の順。キーは `parse_key` が受け付ける名前）。
@@ -71,10 +77,11 @@ impl std::fmt::Display for HotKey {
                 write!(f, "{name}+")?;
             }
         }
+        if let Some((name, _)) = NAMED_KEYS.iter().find(|(_, vk)| *vk == self.vk) {
+            return f.write_str(name);
+        }
         match self.vk {
-            0x20 => f.write_str("Space"),
-            0x2D => f.write_str("Insert"),
-            0x70..=0x87 => write!(f, "F{}", self.vk - 0x70 + 1),
+            vk if (VK_F1..VK_F1 + F_KEYS).contains(&vk) => write!(f, "F{}", vk - VK_F1 + 1),
             // A〜Z・0〜9 は仮想キーコードが文字コードと同じ
             vk => match char::from_u32(vk) {
                 Some(c) => write!(f, "{c}"),
@@ -113,8 +120,6 @@ const SPARE_ID: i32 = 2;
 pub struct Active {
     pub id: i32,
     pub key: HotKey,
-    /// 設定に書かれたとおりの表示用の文字列
-    pub text: String,
 }
 
 /// 設定を反映したあとのホットキー。
@@ -143,24 +148,20 @@ impl Outcome {
 pub fn switch(
     current: Option<Active>,
     key: HotKey,
-    text: &str,
     has_warning: bool,
     register: impl FnOnce(i32, HotKey) -> bool,
     unregister: impl FnOnce(i32),
 ) -> (Option<Active>, Outcome) {
     match current {
         Some(current) if has_warning => {
-            let outcome = Outcome::Kept(current.text.clone());
+            let outcome = Outcome::Kept(current.key.to_string());
             (Some(current), outcome)
         }
         // 同じキーを別の ID で登録しようとすると RegisterHotKey が失敗するので、そのまま使う
-        Some(current) if current.key == key => (
-            Some(Active {
-                text: text.to_string(),
-                ..current
-            }),
-            Outcome::Registered(text.to_string()),
-        ),
+        Some(current) if current.key == key => {
+            let outcome = Outcome::Registered(key.to_string());
+            (Some(current), outcome)
+        }
         current => {
             let id = match &current {
                 Some(c) if c.id == FIRST_ID => SPARE_ID,
@@ -170,16 +171,14 @@ pub fn switch(
                 if let Some(old) = current {
                     unregister(old.id);
                 }
-                let next = Active {
-                    id,
-                    key,
-                    text: text.to_string(),
-                };
-                (Some(next), Outcome::Registered(text.to_string()))
+                (
+                    Some(Active { id, key }),
+                    Outcome::Registered(key.to_string()),
+                )
             } else {
-                let kept = current.as_ref().map(|c| c.text.clone());
+                let kept = current.as_ref().map(|c| c.key.to_string());
                 let outcome = Outcome::Failed {
-                    wanted: text.to_string(),
+                    wanted: key.to_string(),
                     kept,
                 };
                 (current, outcome)
@@ -280,11 +279,7 @@ mod tests {
     }
 
     fn active(id: i32, text: &str) -> Active {
-        Active {
-            id,
-            key: key(text),
-            text: text.to_string(),
-        }
+        Active { id, key: key(text) }
     }
 
     /// switch を、登録が成功するかどうかを決めて呼ぶ。登録・解除した ID も返す。
@@ -298,7 +293,6 @@ mod tests {
         let (next, outcome) = super::switch(
             current,
             key(text),
-            text,
             has_warning,
             |id, _| {
                 registered.push(id);
@@ -363,18 +357,34 @@ mod tests {
         assert_eq!(registered, [FIRST_ID]);
     }
 
-    // 同じキーを2つの ID で登録すると RegisterHotKey が失敗するので、登録し直さない
+    // 台帳 D36: 同じキーのまま読み直したら、登録し直さない
     #[test]
-    fn same_hotkey_is_not_registered_again() {
-        let current = active(SPARE_ID, "Ctrl+Shift+E");
+    fn same_key_is_not_registered_again() {
+        let current = active(1, "Ctrl+Shift+E");
         let (next, outcome, registered, unregistered) =
-            try_switch(Some(current), "ctrl+shift+e", false, false);
-        assert_eq!(
-            next,
-            Some(active(SPARE_ID, "ctrl+shift+e")),
-            "表示は新しい書き方"
-        );
-        assert_eq!(outcome, Outcome::Registered("ctrl+shift+e".into()));
-        assert!(registered.is_empty() && unregistered.is_empty());
+            try_switch(Some(current.clone()), "ctrl + shift + e", false, false);
+        assert_eq!(next, Some(current));
+        assert_eq!(outcome, Outcome::Registered("Ctrl+Shift+E".into()));
+        assert_eq!(registered, Vec::<i32>::new());
+        assert_eq!(unregistered, Vec::<i32>::new());
+    }
+
+    #[test]
+    fn every_key_name_round_trips() {
+        let names = ('A'..='Z')
+            .chain('0'..='9')
+            .map(String::from)
+            .chain((1..=24).map(|n| format!("F{n}")))
+            .chain(["Space", "Insert"].map(String::from));
+        for name in names {
+            let text = format!("Ctrl+{name}");
+            assert_eq!(parse(&text).unwrap().to_string(), text);
+        }
+    }
+
+    // 台帳 D44: 誤りの文のキー名は、書いたとおりに出す
+    #[test]
+    fn unknown_key_is_quoted_as_written() {
+        assert!(parse("Ctrl+Nope").unwrap_err().contains("\"Nope\""));
     }
 }

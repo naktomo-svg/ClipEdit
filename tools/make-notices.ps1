@@ -11,13 +11,13 @@ $target = 'x86_64-pc-windows-msvc'
 $manifest = Join-Path $root 'Cargo.toml'
 # ライセンス文のファイルの場所を知るために使う。cargo metadata の依存の一覧は機能（features）を広めに解決して、
 # 実際には入らないライブラリも含むので、入るものの一覧は cargo tree で決める
-$meta = cargo metadata --format-version 1 --manifest-path $manifest | ConvertFrom-Json
+$meta = cargo metadata --locked --format-version 1 --manifest-path $manifest | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $packages = @{}
 foreach ($p in $meta.packages) { $packages["$($p.name) v$($p.version)"] = $p }
 
 # 通常の依存だけをたどる。proc-macro はビルド中にだけ動き exe に入らないので、その下の行も飛ばす
-$tree = cargo tree --manifest-path $manifest -e normal --target $target --prefix depth --format '{p}'
+$tree = cargo tree --locked --manifest-path $manifest -e normal --target $target --prefix depth --format '{p}'
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $linked = [ordered]@{}
 $skipBelow = [int]::MaxValue

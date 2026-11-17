@@ -6,8 +6,12 @@ mod autostart;
 mod clipboard;
 mod config;
 mod editor;
+mod favorite_menu;
+mod favorites;
 mod hotkey;
+mod icon;
 mod instance;
+mod textops;
 mod tray;
 mod wide;
 
@@ -32,6 +36,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{HSTRING, PCWSTR, w};
 
 use editor::Editor;
+use favorites::Favorite;
 
 const MAIN_CLASS: PCWSTR = w!("ClipEditMain");
 
@@ -40,7 +45,8 @@ thread_local! {
     static ACTIVE_HOTKEY: RefCell<Option<hotkey::Active>> = const { RefCell::new(None) };
     static TASKBAR_CREATED: Cell<u32> = const { Cell::new(0) };
     static TRAY_TIP: RefCell<String> = RefCell::new(String::from("ClipEdit"));
-    static PENDING_NOTICES: RefCell<tray::PendingNotices> = RefCell::new(tray::PendingNotices::default());
+    // メニューを出した時点のお気に入り。選ばれた番号はこの写しで引く（フォルダが変わっても取り違えない）
+    static TRAY_FAVORITES: RefCell<Vec<Favorite>> = const { RefCell::new(Vec::new()) };
 }
 
 fn main() {
@@ -64,6 +70,7 @@ fn main() {
     EDITOR.with(|e| e.set(Some(editor)));
     let main = create_main_window(instance)
         .unwrap_or_else(|e| fail_startup("本体ウィンドウを作れませんでした", &e));
+    editor::set_notice_window(main);
     start_tray_and_hotkey(main);
     run_message_loop(editor);
     // SAFETY: mutex は single_instance が作った自分のハンドルで、このあと使わない。
@@ -109,7 +116,7 @@ fn start_tray_and_hotkey(main: HWND) {
     let applied = apply_config(main);
     add_tray_icon(main);
     if let Some(warning) = &applied.warning {
-        show_notice(
+        tray::show_notice(
             main,
             tray::NoticeKind::Warning,
             "ClipEdit: 設定を既定値で起動しました",
@@ -117,7 +124,7 @@ fn start_tray_and_hotkey(main: HWND) {
         );
     }
     if !applied.outcome.is_registered() {
-        show_notice(
+        tray::show_notice(
             main,
             tray::NoticeKind::Warning,
             "ClipEdit",
@@ -151,14 +158,13 @@ struct AppliedConfig {
 /// 設定ファイルを読み、ホットキーを切り替えて、ツールチップの文字を決める。
 fn apply_config(hwnd: HWND) -> AppliedConfig {
     let (config, config_warning) = config::load(&config::default_path());
-    let (key, text, hotkey_warning) = choose_hotkey(&config.hotkey);
+    let (key, hotkey_warning) = choose_hotkey(&config.hotkey);
     let warning = config_warning.or(hotkey_warning);
     let outcome = ACTIVE_HOTKEY.with(|a| {
         let mut active = a.borrow_mut();
         let (next, outcome) = hotkey::switch(
             active.take(),
             key,
-            &text,
             warning.is_some(),
             |id, key| hotkey::register(hwnd, id, key).is_ok(),
             |id| hotkey::unregister(hwnd, id),
@@ -173,8 +179,10 @@ fn apply_config(hwnd: HWND) -> AppliedConfig {
 /// トレイの「設定を読み直す」。起動し直さずに config.toml を反映する（台帳 D9）。
 fn reload_config(hwnd: HWND) {
     let applied = apply_config(hwnd);
-    TRAY_TIP.with(|t| tray::set_tip(hwnd, &t.borrow()));
-    show_notice(
+    // 借りたまま Shell_NotifyIconW を呼ばない（監査 S38）
+    let tip = TRAY_TIP.with(|t| t.borrow().clone());
+    tray::set_tip(hwnd, &tip);
+    tray::show_notice(
         hwnd,
         reload_notice_kind(applied.outcome.is_registered(), applied.warning.as_deref()),
         "ClipEdit: 設定を読み直しました",
@@ -205,29 +213,14 @@ fn hotkey_summary(outcome: &hotkey::Outcome, warning: Option<&str>) -> String {
         }
     };
     match warning {
-        Some(warning) => format!(
-            "{warning}
-{status}"
-        ),
+        Some(warning) => format!("{warning}\n{status}"),
         None => status,
     }
 }
 
-/// トレイにアイコンを出す。出せたら、それまでに出せなかった通知を送り直す（台帳 D3）。
+/// トレイにアイコンを出す。出せたら、それまでに出せなかった通知も送り直す（台帳 D3）。
 fn add_tray_icon(hwnd: HWND) {
-    if TRAY_TIP.with(|t| tray::add(hwnd, &t.borrow())).is_ok() {
-        PENDING_NOTICES.with(|p| {
-            p.borrow_mut().retry(|k, t, m| tray::notify(hwnd, k, t, m));
-        });
-    }
-}
-
-/// 通知を出す。トレイの準備ができていなくて出せなければ、覚えておいてあとで出す。
-fn show_notice(hwnd: HWND, kind: tray::NoticeKind, title: &str, message: &str) {
-    PENDING_NOTICES.with(|p| {
-        p.borrow_mut()
-            .post(kind, title, message, |k, t, m| tray::notify(hwnd, k, t, m));
-    });
+    tray::add_icon(hwnd, &TRAY_TIP.with(|t| t.borrow().clone()));
 }
 
 /// 起動できなかった理由をメッセージボックスで出して終了する（台帳 D2）。
@@ -261,30 +254,26 @@ fn show_error(text: &str) {
 }
 
 fn startup_error_text(what: &str, detail: &str) -> String {
-    format!(
-        "ClipEdit を起動できませんでした。
-{what}: {detail}"
-    )
+    format!("ClipEdit を起動できませんでした。\n{what}: {detail}")
 }
 
-/// 設定に書かれたホットキーから、使うホットキー・表示用の文字列・警告を決める。
+/// 設定に書かれたホットキーから、使うホットキーと警告を決める。
 /// 書き方が正しくなければ既定のホットキーにし、理由を警告で返す。
-/// 表示用の文字列は設定の書き方ではなく、決まった書き方にする（台帳 D42）。
-fn choose_hotkey(text: &str) -> (hotkey::HotKey, String, Option<String>) {
-    let (hk, warning) = match hotkey::parse(text) {
+/// 表示には `HotKey` の `to_string()` を使う（設定の書き方ではなく、決まった書き方。台帳 D42）。
+fn choose_hotkey(text: &str) -> (hotkey::HotKey, Option<String>) {
+    match hotkey::parse(text) {
         Ok(hk) => (hk, None),
         Err(e) => (
             hotkey::parse(config::DEFAULT_HOTKEY).expect("既定のホットキーは正しい書き方"),
             Some(e),
         ),
-    };
-    (hk, hk.to_string(), warning)
+    }
 }
 
 /// トレイのツールチップ。使っているホットキーだけを出す。
 fn tray_tip(active: Option<&hotkey::Active>) -> String {
     match active {
-        Some(active) => format!("ClipEdit ({})", active.text),
+        Some(active) => format!("ClipEdit ({})", active.key),
         None => "ClipEdit (ホットキーなし)".to_string(),
     }
 }
@@ -310,13 +299,32 @@ fn open_editor() {
 }
 
 fn toggle_autostart(hwnd: HWND) {
-    if let Err(e) = autostart::set(!autostart::is_enabled()) {
-        show_notice(
+    // 別の場所の登録があるときは、選ぶと今の場所で登録し直す
+    if let Err(e) = autostart::set(autostart::state() != autostart::State::On) {
+        tray::show_notice(
             hwnd,
             tray::NoticeKind::Warning,
             "ClipEdit: 自動起動を切り替えられませんでした",
             &e,
         );
+    }
+}
+
+/// トレイの右クリックメニュー。出す前にお気に入りを読み直し、その写しを覚えておく。
+fn show_tray_menu(hwnd: HWND) {
+    let listing = favorites::list(&favorites::default_dir());
+    TRAY_FAVORITES.with(|f| *f.borrow_mut() = listing.items.clone());
+    tray::show_menu(hwnd, autostart::state(), &listing);
+}
+
+/// メニューの項目番号から、覚えている写しのお気に入りを取り出す。
+fn picked_favorite(snapshot: &[Favorite], id: usize) -> Option<Favorite> {
+    snapshot.get(favorite_menu::favorite_index(id)?).cloned()
+}
+
+fn open_favorite(favorite: &Favorite) {
+    if let Some(editor) = EDITOR.with(|e| e.get()) {
+        editor.open_favorite(favorite);
     }
 }
 
@@ -330,7 +338,7 @@ extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARA
         tray::WM_TRAY => {
             match (lparam.0 & 0xFFFF) as u32 {
                 WM_LBUTTONUP => open_editor(),
-                WM_RBUTTONUP => tray::show_menu(hwnd, autostart::is_enabled()),
+                WM_RBUTTONUP => show_tray_menu(hwnd),
                 _ => {}
             }
             LRESULT(0)
@@ -340,11 +348,20 @@ extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARA
                 tray::CMD_OPEN => open_editor(),
                 tray::CMD_AUTOSTART => toggle_autostart(hwnd),
                 tray::CMD_RELOAD => reload_config(hwnd),
+                favorite_menu::CMD_ORGANIZE => {
+                    favorite_menu::organize(&favorites::default_dir(), Some(hwnd));
+                }
                 // SAFETY: hwnd はこのウィンドウ関数が受け取った自分のウィンドウ。
                 tray::CMD_EXIT => unsafe {
                     let _ = DestroyWindow(hwnd);
                 },
-                _ => {}
+                id => {
+                    if let Some(favorite) =
+                        TRAY_FAVORITES.with(|f| picked_favorite(&f.borrow(), id))
+                    {
+                        open_favorite(&favorite);
+                    }
+                }
             }
             LRESULT(0)
         }
@@ -373,24 +390,24 @@ mod tests {
 
     #[test]
     fn valid_hotkey_is_used_as_written() {
-        let (hk, text, warning) = choose_hotkey("Ctrl+Shift+E");
+        let (hk, warning) = choose_hotkey("Ctrl+Shift+E");
         assert_eq!(hk, hotkey::parse("Ctrl+Shift+E").unwrap());
-        assert_eq!(text, "Ctrl+Shift+E");
+        assert_eq!(hk.to_string(), "Ctrl+Shift+E");
         assert_eq!(warning, None);
     }
 
     // 台帳 D42: ツールチップと通知には、設定の書き方ではなく決まった書き方を出す
     #[test]
     fn hotkey_text_is_canonical_not_as_written() {
-        let (_, text, _) = choose_hotkey(" ctrl + shift + e ");
-        assert_eq!(text, "Ctrl+Shift+E");
+        let (hk, _) = choose_hotkey(" ctrl + shift + e ");
+        assert_eq!(hk.to_string(), "Ctrl+Shift+E");
     }
 
     #[test]
     fn invalid_hotkey_falls_back_to_default_with_warning() {
-        let (hk, text, warning) = choose_hotkey("Ctrl+Nope");
+        let (hk, warning) = choose_hotkey("Ctrl+Nope");
         assert_eq!(hk, hotkey::parse(config::DEFAULT_HOTKEY).unwrap());
-        assert_eq!(text, config::DEFAULT_HOTKEY);
+        assert_eq!(hk.to_string(), config::DEFAULT_HOTKEY);
         assert!(warning.unwrap().to_lowercase().contains("nope"));
     }
 
@@ -484,13 +501,36 @@ mod tests {
         assert!(text.contains("アクセスが拒否されました"));
     }
 
+    #[test]
+    fn picked_favorite_uses_the_snapshot() {
+        let snapshot = vec![
+            Favorite {
+                name: "a".into(),
+                text: "A".into(),
+            },
+            Favorite {
+                name: "b".into(),
+                text: "B".into(),
+            },
+        ];
+        assert_eq!(
+            picked_favorite(&snapshot, favorite_menu::CMD_FAVORITE_FIRST + 1),
+            Some(snapshot[1].clone())
+        );
+        assert_eq!(
+            picked_favorite(&snapshot, favorite_menu::CMD_FAVORITE_FIRST + 2),
+            None,
+            "覚えている数より大きい"
+        );
+        assert_eq!(picked_favorite(&snapshot, tray::CMD_OPEN), None);
+    }
+
     // 台帳 D18: 登録できなかったキーをツールチップに出し続けない
     #[test]
     fn tray_tip_shows_hotkey_only_when_registered() {
         let active = hotkey::Active {
             id: 1,
             key: hotkey::parse("Ctrl+Alt+V").unwrap(),
-            text: "Ctrl+Alt+V".into(),
         };
         assert_eq!(tray_tip(Some(&active)), "ClipEdit (Ctrl+Alt+V)");
         assert_eq!(tray_tip(None), "ClipEdit (ホットキーなし)");

@@ -16,14 +16,14 @@ function Step($name, [scriptblock]$body) {
 }
 
 Step '書式（cargo fmt --check）' { cargo fmt --check }
-Step 'clippy' { cargo clippy --all-targets --quiet -- -D warnings }
-Step 'テスト' { cargo test --quiet }
+Step 'clippy' { cargo clippy --locked --all-targets --quiet -- -D warnings }
+Step 'テスト' { cargo test --locked --quiet }
 Step '負債の兆候（debt-scan -Strict）' { pwsh -NoProfile -File tools/debt-scan.ps1 -Strict | Select-Object -Last 3 }
 # 配布の直前ではなく、依存を変えたときに気づけるよう、毎回書き出してみる（台帳 D43）
 Step 'ライセンス文（make-notices）' { pwsh -NoProfile -File tools/make-notices.ps1 -Out target/notices/THIRD-PARTY-NOTICES.txt }
 if ($Hardware) {
     Get-Process clipedit -ErrorAction SilentlyContinue | Stop-Process -Force
-    Step '実機のテスト（--ignored）' { cargo test --quiet -- --ignored --test-threads=1 }
+    Step '実機のテスト（--ignored）' { cargo test --locked --quiet -- --ignored --test-threads=1 }
     Step '配布用ビルドと exe の検査' { pwsh -NoProfile -File tools/build-release.ps1 }
 }
 

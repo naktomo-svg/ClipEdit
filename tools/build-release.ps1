@@ -5,7 +5,7 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $remap = "--remap-path-prefix=$env:USERPROFILE=~"
-cargo build --release --manifest-path (Join-Path $root 'Cargo.toml') `
+cargo build --release --locked --manifest-path (Join-Path $root 'Cargo.toml') `
     --config "target.x86_64-pc-windows-msvc.rustflags=['$remap']"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 pwsh -NoProfile -File (Join-Path $PSScriptRoot 'check-release.ps1')

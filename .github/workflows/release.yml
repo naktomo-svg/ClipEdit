@@ -16,13 +16,35 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  # 同じタグの push の合図が二重に届くことがある（新しいリポジトリへの最初の push の直後に、合図が遅れて届いた）。
+  # このタグの Release がもうあれば、作り直さずに成功で終える（公開済みの zip と attestation を変えない）
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      exists: ${{ steps.release.outputs.exists }}
+    steps:
+      - name: このタグの Release がもうあるか
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$TAG の Release はもうあるので、作り直さない"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # 検査は書き込み権限のないジョブで行う（監査 S19）。ビルドスクリプト・proc-macro・テスト・
+  # install-action が入れるツールには、このジョブの読み取り専用のトークンしか見えない
+  verify:
+    needs: check
+    if: needs.check.outputs.exists == 'false'
     runs-on: windows-latest
     timeout-minutes: 30
-    permissions:
-      contents: write      # Release を作る
-      id-token: write      # attestation の署名（Sigstore）に使う
-      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -33,11 +55,11 @@ jobs:
           toolchain: 1.99.0
           components: clippy, rustfmt
 
-      # 配布物は毎回まっさらな状態からビルドする（キャッシュを汚された場合に、それが配布物へ入らないように rust-cache は使わない）
-
+      # fallback: none で cargo-binstall に切り替えない（切り替えるときだけ、トークンが install-action に渡る）
       - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-audit@0.22.2,cargo-deny@0.20.2
+          fallback: none
 
       - name: タグと Cargo.toml の版が同じか
         shell: pwsh
@@ -51,9 +73,56 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -File tools/check-all.ps1
 
+  # 配布物は、検査のツールを入れない別のまっさらな runner で作る（監査 S32）。検査のジョブに入れたツールが
+  # 配布物を書き換えられないようにするため。キャッシュを汚された場合に、それが配布物へ入らないように rust-cache も使わない
+  build:
+    needs: verify
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master 2026-09-12
+        with:
+          toolchain: 1.99.0
+
       - name: 配布用 zip とチェックサムを作る（exe の検査も含む）
         shell: pwsh
         run: pwsh -NoProfile -File tools/make-dist.ps1
+
+      - name: 配布するファイルを release のジョブに渡す
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: |
+            target/dist/ClipEdit-*-win64.zip
+            target/dist/SHA256SUMS.txt
+            target/dist/ClipEdit/clipedit.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  # 書き込み権限を持つのはこのジョブだけ。リポジトリのコードは動かさず、受け取ったファイルに証明を付けて上げるだけ
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write      # Release を作る
+      id-token: write      # attestation の署名（Sigstore）に使う
+      attestations: write
+    steps:
+      - name: build のジョブが作ったファイルを受け取る
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: target/dist
+
+      # 受け取った zip と exe が、build のジョブが書いたチェックサムと同じかを確かめてから上げる（監査 S37）
+      - name: 受け取ったファイルをチェックサムと照らし合わせる
+        working-directory: target/dist
+        run: sha256sum --check --strict SHA256SUMS.txt
 
       # GitHub Free / Pro / Team では、attestation は公開リポジトリでしか使えないので、非公開のときは飛ばす
       - name: zip と exe に、作った場所の証明を付ける
@@ -91,4 +160,6 @@ jobs:
 
           exe には署名がないため、初めて起動するときに「WindowsによってPCが保護されました」と出ることがあります。上の手順で確かめてから、「詳細情報」→「実行」で起動してください。
           "@
-          gh release create $env:TAG "target/dist/$zip" target/dist/SHA256SUMS.txt --repo $env:REPO --title "ClipEdit $env:TAG" --notes $notes
+          # 版に - が入る（v0.3.6-rc.1 など。semver の試験版）なら、試験版にして「Latest」にしない（監査 S37）
+          $extra = if ($env:TAG.Contains('-')) { @('--prerelease', '--latest=false') } else { @() }
+          gh release create $env:TAG "target/dist/$zip" target/dist/SHA256SUMS.txt --repo $env:REPO --title "ClipEdit $env:TAG" --notes $notes @extra
