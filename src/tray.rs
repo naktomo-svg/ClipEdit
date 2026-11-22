@@ -50,7 +50,7 @@ fn add(hwnd: HWND, tip: &str) -> Result<(), String> {
     };
     crate::wide::copy_wide(&mut data.szTip, tip);
     // SAFETY: data は cbSize を設定した NOTIFYICONDATAW で、文字列はどれも copy_wide で 0 終端にしてある。
-    let added = unsafe { Shell_NotifyIconW(NIM_ADD, &data) }.as_bool();
+    let added = unsafe { Shell_NotifyIconW(NIM_ADD, &raw const data) }.as_bool();
     if let Some(icon) = own_icon {
         // シェルはアイコンを複製して持つので、こちらの分は破棄してよい
         // SAFETY: icon は load_app_icon で作った自分のアイコンで、このあと使わない。
@@ -69,7 +69,7 @@ pub fn remove(hwnd: HWND) {
     let data = base_data(hwnd);
     // SAFETY: data は cbSize を設定した NOTIFYICONDATAW。登録が無ければ失敗が返るだけ。
     unsafe {
-        let _ = Shell_NotifyIconW(NIM_DELETE, &data);
+        let _ = Shell_NotifyIconW(NIM_DELETE, &raw const data);
     }
 }
 
@@ -79,7 +79,7 @@ pub fn set_tip(hwnd: HWND, tip: &str) -> bool {
     data.uFlags = NIF_TIP;
     crate::wide::copy_wide(&mut data.szTip, tip);
     // SAFETY: data は cbSize を設定した NOTIFYICONDATAW で、文字列は copy_wide で 0 終端にしてある。
-    unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) }.as_bool()
+    unsafe { Shell_NotifyIconW(NIM_MODIFY, &raw const data) }.as_bool()
 }
 
 /// 通知の種類。うまくいった知らせは Info、問題を知らせるときは Warning（台帳 D34）。
@@ -100,7 +100,7 @@ fn notify(hwnd: HWND, kind: NoticeKind, title: &str, message: &str) -> bool {
     crate::wide::copy_wide(&mut data.szInfoTitle, title);
     crate::wide::copy_wide(&mut data.szInfo, message);
     // SAFETY: data は cbSize を設定した NOTIFYICONDATAW で、文字列は copy_wide で 0 終端にしてある。
-    unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) }.as_bool()
+    unsafe { Shell_NotifyIconW(NIM_MODIFY, &raw const data) }.as_bool()
 }
 
 /// 出せなかった通知を覚えておき、あとで送り直す（台帳 D3）。
@@ -138,6 +138,13 @@ impl PendingNotices {
         self.0
             .retain(|(kind, title, message)| !send(*kind, title, message));
     }
+
+    /// later の通知を、覚えているものの後ろに足す。同じものは重ねず、`MAX_PENDING` を超えたら古いものを捨てる。
+    fn append(&mut self, later: PendingNotices) {
+        for (kind, title, message) in later.0 {
+            self.post(kind, &title, &message, |_, _, _| false);
+        }
+    }
 }
 
 thread_local! {
@@ -156,9 +163,7 @@ pub fn add_icon(hwnd: HWND, tip: &str) -> bool {
         PENDING_NOTICES.with(|p| {
             // 送り直している間に覚えた通知は、残ったものの後ろに足す
             let mut current = p.borrow_mut();
-            for (kind, title, message) in std::mem::take(&mut current.0) {
-                pending.post(kind, &title, &message, |_, _, _| false);
-            }
+            pending.append(std::mem::take(&mut *current));
             *current = pending;
         });
     }
@@ -202,7 +207,7 @@ pub fn show_menu(hwnd: HWND, autostart: autostart::State, favorites: &Listing) {
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, CMD_EXIT, w!("終了"));
         let mut pt = POINT::default();
-        let _ = GetCursorPos(&mut pt);
+        let _ = GetCursorPos(&raw mut pt);
         // これをしないとメニューの外をクリックしても閉じない（Win32 の既知の作法）
         let _ = SetForegroundWindow(hwnd);
         let _ = TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, Some(0), hwnd, None);
@@ -300,5 +305,50 @@ mod tests {
             true
         });
         assert_eq!(sent, vec![NoticeKind::Warning, NoticeKind::Info]);
+    }
+
+    fn messages(pending: &mut PendingNotices) -> Vec<String> {
+        let mut sent = Vec::new();
+        pending.retry(|_, _, m| {
+            sent.push(m.to_string());
+            true
+        });
+        sent
+    }
+
+    // 台帳 D64: 送り直している間に覚えた通知は、残ったものの後ろに足す。同じものは重ねない
+    #[test]
+    fn notices_queued_during_retry_go_after_the_rest() {
+        let mut pending = PendingNotices::default();
+        for m in ["A", "B"] {
+            pending.post(NoticeKind::Info, "t", m, |_, _, _| false);
+        }
+        pending.retry(|_, _, m| m == "B");
+        let mut later = PendingNotices::default();
+        for m in ["C", "A"] {
+            later.post(NoticeKind::Info, "t", m, |_, _, _| false);
+        }
+        pending.append(later);
+        assert_eq!(messages(&mut pending), ["A", "C"]);
+    }
+
+    // 台帳 D64: 足したあとも、覚えるのは新しいほうから MAX_PENDING 件まで
+    #[test]
+    fn notices_queued_during_retry_respect_the_limit() {
+        let mut pending = PendingNotices::default();
+        for i in 0..MAX_PENDING {
+            pending.post(NoticeKind::Info, "t", &format!("old{i}"), |_, _, _| false);
+        }
+        let mut later = PendingNotices::default();
+        later.post(NoticeKind::Info, "t", "new", |_, _, _| false);
+        pending.append(later);
+        let sent = messages(&mut pending);
+        assert_eq!(sent.len(), MAX_PENDING);
+        assert_eq!(
+            sent.first().map(String::as_str),
+            Some("old1"),
+            "いちばん古いものを捨てる"
+        );
+        assert_eq!(sent.last().map(String::as_str), Some("new"));
     }
 }

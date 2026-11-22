@@ -115,7 +115,7 @@ fn utf16_file_is_counted_as_broken() {
     // メモ帳の「UTF-16 LE」: BOM FF FE + "あ"
     std::fs::write(dir.join("01 a.txt"), [0xFF, 0xFE, 0x42, 0x30]).unwrap();
     let listing = list(&dir);
-    assert!(listing.items.is_empty());
+    assert_eq!(listing.items, []);
     assert_eq!(listing.broken, 1);
 }
 
@@ -210,7 +210,7 @@ fn add_saves_next_number_and_returns_position() {
         std::fs::write(dir.join(name), "x").unwrap();
     }
     let added = add(&dir, "新しい\r\n本文");
-    assert_eq!(added, Ok((3, "新しい".to_string())));
+    assert_eq!(added, Ok(3));
     assert_eq!(
         std::fs::read(dir.join("06 新しい.txt")).unwrap(),
         "新しい\r\n本文".as_bytes()
@@ -221,7 +221,7 @@ fn add_saves_next_number_and_returns_position() {
 #[test]
 fn add_creates_the_folder_and_pads_to_two_digits() {
     let dir = temp_dir("add-new").join("favorites");
-    assert_eq!(add(&dir, "x"), Ok((1, "x".to_string())));
+    assert_eq!(add(&dir, "x"), Ok(1));
     assert!(dir.join("01 x.txt").is_file());
 }
 
@@ -229,7 +229,7 @@ fn add_creates_the_folder_and_pads_to_two_digits() {
 fn add_never_overwrites_and_suffixes_same_name() {
     let dir = temp_dir("add-same");
     std::fs::write(dir.join("01 要約.txt"), "元").unwrap();
-    assert_eq!(add(&dir, "要約"), Ok((2, "要約 (2)".to_string())));
+    assert_eq!(add(&dir, "要約"), Ok(2));
     assert!(dir.join("02 要約 (2).txt").is_file());
     assert_eq!(
         std::fs::read_to_string(dir.join("01 要約.txt")).unwrap(),

@@ -18,6 +18,8 @@ $text = [System.Text.Encoding]::ASCII.GetString($bytes)
 Add-Type -Namespace ClipEditCheck -Name Shell -MemberDefinition '[DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern uint ExtractIconExW(string file, int index, System.IntPtr large, System.IntPtr small, uint count);'
 # index -1 で、exe に入っているアイコンの数が返る
 $iconCount = [ClipEditCheck.Shell]::ExtractIconExW($exe, -1, [IntPtr]::Zero, [IntPtr]::Zero, 0)
+$version = & (Join-Path $PSScriptRoot 'cargo-version.ps1')
+$info = (Get-Item $exe).VersionInfo
 
 $checks = [ordered]@{
     # S2: VC++ ランタイム DLL を exe と同じフォルダから読まない（静的リンク）
@@ -34,6 +36,10 @@ $checks = [ordered]@{
     'D5 manifest embedded'    = $text.Contains('Microsoft.Windows.Common-Controls')
     # エクスプローラーに出す exe のアイコン（トレイと同じ assets/clipedit.ico）が入っている
     'exe icon embedded'       = $iconCount -ge 1
+    # D39: エクスプローラーのプロパティで版が分かる（Cargo.toml の版と同じ）
+    'D39 version info'        = $info.ProductVersion -eq $version -and $info.FileVersion -eq $version -and $info.ProductName -eq 'ClipEdit'
+    # D73: 試験版（版に - がある）なら、エクスプローラーやインストーラーが正式版と見分けられるよう PRERELEASE の印を立てる
+    'D73 pre-release flag'    = $info.IsPreRelease -eq $version.Contains('-')
 }
 $failed = 0
 foreach ($c in $checks.GetEnumerator()) {

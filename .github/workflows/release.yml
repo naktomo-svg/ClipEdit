@@ -19,7 +19,7 @@ jobs:
   # 同じタグの push の合図が二重に届くことがある（新しいリポジトリへの最初の push の直後に、合図が遅れて届いた）。
   # このタグの Release がもうあれば、作り直さずに成功で終える（公開済みの zip と attestation を変えない）
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # 台帳 D68: 版を固定する。GitHub が古い版の終わりを告げたら上げる
     timeout-minutes: 5
     outputs:
       exists: ${{ steps.release.outputs.exists }}
@@ -43,7 +43,7 @@ jobs:
   verify:
     needs: check
     if: needs.check.outputs.exists == 'false'
-    runs-on: windows-latest
+    runs-on: windows-2025  # 台帳 D68: 版を固定する。GitHub が古い版の終わりを告げたら上げる
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -66,7 +66,7 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $version = & tools/cargo-version.ps1
           if ($env:TAG -ne "v$version") { throw "タグ $env:TAG と Cargo.toml の版 $version が違う" }
 
       - name: 書式・clippy・テスト・負債の兆候・ライセンス文
@@ -77,7 +77,7 @@ jobs:
   # 配布物を書き換えられないようにするため。キャッシュを汚された場合に、それが配布物へ入らないように rust-cache も使わない
   build:
     needs: verify
-    runs-on: windows-latest
+    runs-on: windows-2025  # 台帳 D68: 版を固定する。GitHub が古い版の終わりを告げたら上げる
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -106,7 +106,7 @@ jobs:
   # 書き込み権限を持つのはこのジョブだけ。リポジトリのコードは動かさず、受け取ったファイルに証明を付けて上げるだけ
   release:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # 台帳 D68: 版を固定する。GitHub が古い版の終わりを告げたら上げる
     timeout-minutes: 10
     permissions:
       contents: write      # Release を作る

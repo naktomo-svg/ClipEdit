@@ -29,6 +29,7 @@
 - クリップボードが画像などテキスト以外のときは、空の状態で開き、タイトルに「(テキストなし)」と出ます。
 - 改行はすべて CRLF にそろえて表示・書き込みします。
 - 5,000 文字を超える長い行（改行のない JSON や Base64 など）があるときは、折り返さずに横スクロールで表示し、タイトルに「(長い行があるため折り返さずに表示)」と出ます（折り返すと開くのに何十秒もかかるため）。
+- クリップボードに書き込めなかったとき（ほかのアプリが開いたままにしているときなど）は、ウィンドウを閉じずに、タイトルに「書き込み失敗」と理由が出ます。編集欄の中のコピー・切り取りも同じで、タイトルに「コピー失敗」「切り取り失敗」と出ます（切り取ったところは消えません。次に成功すると元のタイトルに戻ります）。
 
 ### トレイアイコン
 
@@ -119,7 +120,7 @@ cargo clippy --all-targets                   # unsafe ブロックには SAFETY 
 
 GitHub に push するかプルリクエストを出すと、GitHub Actions（`.github/workflows/ci.yml`）が `check-all.ps1` と配布用ビルドの検査を流します。実機を使うテストは CI では流さないので、手元で `-Hardware` を付けて流してください。
 
-配布するときは、`Cargo.toml` の `version` を上げてコミットし、同じ版のタグ（例: `v0.2.0`）を push します。`.github/workflows/release.yml` が検査・ビルドをして、zip とチェックサムを GitHub Release に上げます（タグと `Cargo.toml` の版が違うと止まります）。
+配布するときは、`CHANGELOG.md` の「未公開」を版と日付に書き換え、`Cargo.toml` の `version` を上げてコミットし、同じ版のタグ（例: `v0.2.0`）を push します。`.github/workflows/release.yml` が検査・ビルドをして、zip とチェックサムを GitHub Release に上げます（タグと `Cargo.toml` の版が違うと止まります）。
 
 開発は非公開のリポジトリ `naktomo-svg/ClipEdit-dev` で行います。配布は、公開リポジトリ `naktomo-svg/ClipEdit` の Releases（https://github.com/naktomo-svg/ClipEdit/releases ）と note の記事に添付する zip です。公開リポジトリは 2026-10-18 に一度公開したあと非公開に戻し、2026-11-17 に v0.3.6 で公開し直しました。新しい版を出すときは、タグを付けたあとで `pwsh -NoProfile -File tools/publish-public.ps1` を実行し、差分を確かめてから `-Push` を付けて実行し直します（公開側には作業の履歴と作者のメールアドレスを出しません。設計・計画・監査報告・負債の台帳とその基準値は、`.gitattributes` の `export-ignore` で外します）。写し先のフォルダは、このスクリプトが作った複製で、変更・stash・push していないコミット（前回このスクリプトが作ったものを除く）がないときだけ作り直します。2026-10-20 より前の版のスクリプトで作った複製には目印がないので、一度だけ手で消してから実行します。公開リポジトリでは、タグの push で同じ `release.yml` が動き、attestation 付きの Release ができます。
 
@@ -135,7 +136,10 @@ GitHub に push するかプルリクエストを出すと、GitHub Actions（`.
 | `src/editor/copy.rs` | 編集欄のコピー・切り取り・貼り付けで「残さない」印を引き継ぐ |
 | `src/editor/dpi.rs` | 表示倍率に合わせた位置・フォント・アイコン |
 | `src/editor/menu.rs` | メニューバーの「お気に入り」 |
+| `src/editor/title.rs` | 編集ウィンドウのタイトル（いつものタイトルを覚え、書き込みの失敗をその後ろに出し、成功したら戻す） |
 | `src/editor/tests.rs` | 編集ウィンドウのテスト |
+| `src/editor/tests/private_mark.rs` | 編集欄のコピー・貼り付けと Ctrl+Enter が「残さない」印を引き継ぐことのテスト |
+| `src/editor/tests/favorite_tests.rs` | 編集ウィンドウのお気に入り（入れ替え・メニューバー・追加）のテスト |
 | `src/clipboard.rs` | クリップボードの読み書き |
 | `src/hotkey.rs` | ホットキー文字列の解析と登録、設定を読み直したときのキーの切り替え |
 | `src/config.rs` | `config.toml` の読み込み |
@@ -150,12 +154,14 @@ GitHub に push するかプルリクエストを出すと、GitHub Actions（`.
 | `assets/clipedit.ico` | アイコン（`tools/make-icon.ps1` で生成し、exe に埋め込み） |
 | `assets/clipedit.manifest` | アプリのマニフェスト（`build.rs` が exe に埋め込む） |
 | `assets/favorites/` | 配布用 zip の `favorites` フォルダに入れる、お気に入りの見本のプロンプト（`tools/make-dist.ps1` が同梱する） |
-| `build.rs` | マニフェストとアイコンを exe に埋め込むビルドスクリプト |
+| `build.rs` | マニフェスト・アイコン・版の情報を exe に埋め込むビルドスクリプト |
 | `deny.toml` | `cargo deny check` の設定（使ってよいライセンス） |
+| `CHANGELOG.md` | 版ごとの変更の履歴 |
 | `tools/build-release.ps1` | 配布用のビルド（最後に `tools/check-release.ps1` で exe を検査） |
-| `tools/check-release.ps1` | 配布用の exe の検査（静的リンク・CFG・ASLR・DEP・DLL の探し方・ユーザー名のパス・マニフェスト・アイコン） |
+| `tools/check-release.ps1` | 配布用の exe の検査（静的リンク・CFG・ASLR・DEP・DLL の探し方・ユーザー名のパス・マニフェスト・アイコン・版の情報） |
 | `tools/make-dist.ps1` | 配布用の zip を作る（`build-release.ps1` でビルドと検査をしてから、`target/dist/` にまとめる） |
 | `tools/publish-public.ps1` | 別の公開リポジトリ（`naktomo-svg/ClipEdit`）に、今の版の中身を noreply のアドレスで1コミットにまとめて写す（開発は非公開の `ClipEdit-dev`） |
+| `tools/cargo-version.ps1` | `Cargo.toml` の `[package]` の版を出す（`check-release.ps1`・`make-dist.ps1`・`publish-public.ps1`・`release.yml` が使う。検査は `tools/test-cargo-version.ps1`） |
 | `tools/make-notices.ps1` | exe に入る依存ライブラリの著作権表示とライセンス文を `THIRD-PARTY-NOTICES.txt` にまとめる（`make-dist.ps1` が使う） |
 | `tools/check-all.ps1` | すべての検査をまとめて流す |
 | `tools/make-icon.ps1` | `assets/clipedit.ico` を作る |

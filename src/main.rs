@@ -20,6 +20,9 @@ use windows::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT,
     WPARAM,
 };
+use windows::Win32::System::Com::{
+    COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx,
+};
 use windows::Win32::System::LibraryLoader::{
     GetModuleHandleW, LOAD_LIBRARY_SEARCH_SYSTEM32, SetDefaultDllDirectories,
 };
@@ -57,6 +60,8 @@ fn main() {
         instance::hand_over_to_running(|| instance::forward_to_running(MAIN_CLASS), show_error);
         return;
     };
+    // 失敗しても止めない。ShellExecuteW は初期化しなくても、ふつうはフォルダを開ける
+    let _ = init_com();
     // SAFETY: 定数を渡すだけ。ウィンドウを作る前に呼ぶ。失敗しても既定の DPI 設定で動く。
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -90,7 +95,7 @@ fn create_main_window(instance: HINSTANCE) -> windows::core::Result<HWND> {
             lpszClassName: MAIN_CLASS,
             ..Default::default()
         };
-        RegisterClassW(&class);
+        RegisterClassW(&raw const class);
         TASKBAR_CREATED.with(|t| t.set(RegisterWindowMessageW(w!("TaskbarCreated"))));
         // HWND_MESSAGE の窓は TaskbarCreated を受け取れないので、表示しない普通のウィンドウにする
         CreateWindowExW(
@@ -137,14 +142,14 @@ fn start_tray_and_hotkey(main: HWND) {
 fn run_message_loop(editor: Editor) {
     let mut msg = MSG::default();
     // SAFETY: msg はローカル変数で、GetMessageW が書き込んだものだけを使う。
-    while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
+    while unsafe { GetMessageW(&raw mut msg, None, 0, 0) }.as_bool() {
         if editor.handle_key(&msg) {
             continue;
         }
         // SAFETY: msg は GetMessageW が今受け取ったメッセージ。
         unsafe {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            let _ = TranslateMessage(&raw const msg);
+            DispatchMessageW(&raw const msg);
         }
     }
 }
@@ -240,6 +245,13 @@ fn restrict_dll_search() {
     }
 }
 
+/// このスレッドで COM を使えるようにする（監査 S28）。お気に入りのフォルダを開く `ShellExecuteW` の前に要る、と
+/// Microsoft の説明にある。初期化したままプロセスを終える。すでに初期化してあっても成功として true を返す。
+fn init_com() -> bool {
+    // SAFETY: 引数は定数だけ。ウィンドウを持つこのスレッドは STA にする（メッセージループがある）。
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) }.is_ok()
+}
+
 /// エラーをメッセージボックスで出す（トレイの準備がない起動の途中で使う）。
 fn show_error(text: &str) {
     // SAFETY: 文字列は HSTRING と w! で作った 0 終端の文字列。親ウィンドウは持たない。
@@ -293,7 +305,7 @@ fn single_instance() -> Option<HANDLE> {
 }
 
 fn open_editor() {
-    if let Some(editor) = EDITOR.with(|e| e.get()) {
+    if let Some(editor) = EDITOR.with(std::cell::Cell::get) {
         editor.open(clipboard::read_text);
     }
 }
@@ -313,7 +325,7 @@ fn toggle_autostart(hwnd: HWND) {
 /// トレイの右クリックメニュー。出す前にお気に入りを読み直し、その写しを覚えておく。
 fn show_tray_menu(hwnd: HWND) {
     let listing = favorites::list(&favorites::default_dir());
-    TRAY_FAVORITES.with(|f| *f.borrow_mut() = listing.items.clone());
+    TRAY_FAVORITES.with(|f| f.borrow_mut().clone_from(&listing.items));
     tray::show_menu(hwnd, autostart::state(), &listing);
 }
 
@@ -323,7 +335,7 @@ fn picked_favorite(snapshot: &[Favorite], id: usize) -> Option<Favorite> {
 }
 
 fn open_favorite(favorite: &Favorite) {
-    if let Some(editor) = EDITOR.with(|e| e.get()) {
+    if let Some(editor) = EDITOR.with(std::cell::Cell::get) {
         editor.open_favorite(favorite);
     }
 }
@@ -374,7 +386,7 @@ extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARA
             unsafe { PostQuitMessage(0) };
             LRESULT(0)
         }
-        _ if msg == TASKBAR_CREATED.with(|t| t.get()) && msg != 0 => {
+        _ if msg == TASKBAR_CREATED.with(std::cell::Cell::get) && msg != 0 => {
             // エクスプローラーが再起動したらトレイアイコンを付け直す
             add_tray_icon(hwnd);
             LRESULT(0)
@@ -387,6 +399,17 @@ extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARA
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // 監査 S28: ShellExecuteW の前の COM の初期化は、スレッドで1回目でも2回目でも成功として扱う
+    #[test]
+    fn com_initializes_on_a_fresh_thread_and_again() {
+        std::thread::spawn(|| {
+            assert!(init_com(), "1回目");
+            assert!(init_com(), "2回目（S_FALSE）も成功");
+        })
+        .join()
+        .unwrap();
+    }
 
     #[test]
     fn valid_hotkey_is_used_as_written() {

@@ -33,6 +33,10 @@ use crate::tray::{self, NoticeKind};
 mod copy;
 mod dpi;
 mod menu;
+mod title;
+
+pub use title::title_for;
+use title::{favorite_title, note_long_line, show_failure};
 
 const CLASS_NAME: PCWSTR = w!("ClipEditEditor");
 // お気に入りのコマンド ID（100〜121）と重ならないようにする（監査 S28）
@@ -62,7 +66,7 @@ pub fn set_notice_window(hwnd: HWND) {
 }
 
 fn notice_window() -> Option<HWND> {
-    NOTICE_WINDOW.with(|w| w.get())
+    NOTICE_WINDOW.with(std::cell::Cell::get)
 }
 
 fn notice(kind: NoticeKind, title: &str, message: &str) {
@@ -83,7 +87,7 @@ enum KeyAction {
 }
 
 /// IME で変換中のキーは `VK_PROCESSKEY` として届くので、どれにも当たらない。
-/// AltGr は Ctrl+Alt として届くので、Alt が押されているときはお気に入りの呼び出しにせず、
+/// `AltGr` は Ctrl+Alt として届くので、Alt が押されているときはお気に入りの呼び出しにせず、
 /// 文字の入力に回す（ドイツ語などの配列で AltGr+7 が `{` になるため）。
 fn key_action(key: u16, ctrl: bool, alt: bool) -> Option<KeyAction> {
     if !ctrl {
@@ -103,22 +107,9 @@ fn key_action(key: u16, ctrl: bool, alt: bool) -> Option<KeyAction> {
     }
 }
 
-/// WM_KEYDOWN の lParam が、押しっぱなしによる繰り返し（bit 30: 直前も押されていた）か。
+/// `WM_KEYDOWN` の lParam が、押しっぱなしによる繰り返し（bit 30: 直前も押されていた）か。
 fn is_repeat(lparam: isize) -> bool {
     lparam & (1 << 30) != 0
-}
-
-/// お気に入りに入れ替えたときのウィンドウタイトル。
-fn favorite_title(name: &str) -> String {
-    format!("ClipEdit - お気に入り「{name}」  (Ctrl+Enter: クリップボードに書き込む / Esc: 閉じる)")
-}
-
-/// 長い行があるときに、折り返さずに表示していることをタイトルに書き足す。
-fn note_long_line(mut title: String, long: bool) -> String {
-    if long {
-        title.push_str("  (長い行があるため折り返さずに表示)");
-    }
-    title
 }
 
 /// 編集欄の内容を消す。
@@ -155,22 +146,25 @@ fn selection(edit: HWND) -> (usize, usize) {
         SendMessageW(
             edit,
             EM_GETSEL,
-            Some(WPARAM(&mut start as *mut u32 as usize)),
-            Some(LPARAM(&mut end as *mut u32 as isize)),
+            Some(WPARAM(&raw mut start as usize)),
+            Some(LPARAM(&raw mut end as isize)),
         );
     }
     (start as usize, end as usize)
 }
 
 /// 編集欄の start から end まで（UTF-16 の位置）を選ぶ。同じ位置ならキャレットを置くだけ。
+/// end が本文より後ろなら末尾まで（`usize::MAX` で全文）。
 fn set_selection(edit: HWND, start: usize, end: usize) {
+    // EM_SETSEL は位置を int として読み、-1 を「末尾まで」として扱う
+    let end = i32::try_from(end).unwrap_or(-1);
     // SAFETY: EM_SETSEL はポインタを渡さない。範囲が文字列の外なら、編集欄が切り詰める。
     unsafe {
         SendMessageW(
             edit,
             EM_SETSEL,
             Some(WPARAM(start)),
-            Some(LPARAM(isize::try_from(end).unwrap_or(isize::MAX))),
+            Some(LPARAM(isize::try_from(end).unwrap_or(-1))),
         );
     }
 }
@@ -205,15 +199,6 @@ enum Select {
     All,
     /// 何も選ばず、キャレットを先頭に置く
     CaretAtStart,
-}
-
-/// 読み込み結果に応じたウィンドウタイトル。
-pub fn title_for(content: &Result<Option<ClipText>, String>) -> String {
-    match content {
-        Ok(Some(_)) => TITLE.to_string(),
-        Ok(None) => format!("{TITLE}  (テキストなし)"),
-        Err(e) => format!("{TITLE}  - {e}"),
-    }
 }
 
 /// 編集ウィンドウ。編集欄は2つあり、どちらか一方だけを表示する（監査 S10）。
@@ -280,7 +265,7 @@ impl Editor {
                 hCursor: LoadCursorW(None, IDC_ARROW)?,
                 ..Default::default()
             };
-            RegisterClassW(&class);
+            RegisterClassW(&raw const class);
             let hwnd = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 CLASS_NAME,
@@ -378,15 +363,15 @@ impl Editor {
         // SAFETY: cursor と info はローカル変数で、info には cbSize を設定してある。
         unsafe {
             let mut cursor = POINT::default();
-            let _ = GetCursorPos(&mut cursor);
+            let _ = GetCursorPos(&raw mut cursor);
             let monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
             let mut info = MONITORINFO {
                 cbSize: std::mem::size_of::<MONITORINFO>() as u32,
                 ..Default::default()
             };
-            let _ = GetMonitorInfoW(monitor, &mut info);
+            let _ = GetMonitorInfoW(monitor, &raw mut info);
             let (mut dpi_x, mut dpi_y) = (96u32, 96u32);
-            let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y);
+            let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &raw mut dpi_x, &raw mut dpi_y);
             let (x, y, w, h) = dpi::center_rect(
                 info.rcWork,
                 dpi::scale(BASE_WIDTH, dpi_x),
@@ -434,21 +419,19 @@ impl Editor {
     }
 
     fn select_all(&self) {
-        // SAFETY: EM_SETSEL はポインタを渡さない。
-        unsafe {
-            SendMessageW(self.active(), EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
-        }
+        set_selection(self.active(), 0, usize::MAX);
     }
 
+    /// いつものタイトルを付ける。失敗の表示（`show_failure`）はこの後ろに足す。
     pub fn set_title(&self, title: &str) {
-        set_text(self.hwnd, title);
+        title::set(self.hwnd, title);
     }
 
     fn commit(&self) {
-        let private = PRIVATE.with(|p| p.get());
+        let private = PRIVATE.with(std::cell::Cell::get);
         match clipboard::write_text(Some(self.hwnd), &self.text(), private) {
             Ok(()) => self.hide(),
-            Err(e) => self.set_title(&format!("{TITLE}  - 書き込み失敗: {e}")),
+            Err(e) => show_failure(self.hwnd, "書き込み失敗", &e),
         }
     }
 
@@ -461,8 +444,8 @@ impl Editor {
         // SAFETY: 値を渡すだけ。
         let (ctrl, alt) = unsafe {
             (
-                GetKeyState(VK_CONTROL.0 as i32) < 0,
-                GetKeyState(VK_MENU.0 as i32) < 0,
+                GetKeyState(i32::from(VK_CONTROL.0)) < 0,
+                GetKeyState(i32::from(VK_MENU.0)) < 0,
             )
         };
         self.press(msg.wParam.0 as u16, ctrl, alt, is_repeat(msg.lParam.0))
@@ -518,7 +501,7 @@ impl Editor {
 
     /// 編集欄の内容を favorite の本文に入れ替える。同じ編集欄のままなら Ctrl+Z で元に戻せる。
     fn replace_with(&self, favorite: &Favorite) {
-        let was_private = PRIVATE.with(|p| p.get());
+        let was_private = PRIVATE.with(std::cell::Cell::get);
         let title = favorite_title(&favorite.name);
         let long = has_long_line(&favorite.text);
         let target = self.edit_for(long);
@@ -544,10 +527,10 @@ impl Editor {
 
     /// 何も選択せず、キャレットを本文の先頭に置いて見える位置にする。
     fn put_caret_at_start(&self) {
-        // SAFETY: EM_SETSEL と EM_SCROLLCARET はポインタを渡さない。
+        let edit = self.active();
+        set_selection(edit, 0, 0);
+        // SAFETY: EM_SCROLLCARET はポインタを渡さない。
         unsafe {
-            let edit = self.active();
-            SendMessageW(edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(0)));
             SendMessageW(edit, EM_SCROLLCARET, None, None);
         }
     }
@@ -639,7 +622,7 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                 LRESULT(0)
             }
             WM_DPICHANGED => {
-                if !POSITIONING.with(|p| p.get()) {
+                if !POSITIONING.with(std::cell::Cell::get) {
                     let r = &*(lparam.0 as *const RECT);
                     let _ = SetWindowPos(
                         hwnd,

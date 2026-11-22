@@ -67,10 +67,10 @@ pub fn read_text() -> Result<Option<ClipText>, String> {
     // ロックしたメモリは GlobalSize が返す大きさ（確保された大きさ）までしか読まず、
     // 読み終えてから GlobalUnlock する。ハンドル自体はシステムのものなので解放しない。
     unsafe {
-        if IsClipboardFormatAvailable(CF_UNICODETEXT.0 as u32).is_err() {
+        if IsClipboardFormatAvailable(u32::from(CF_UNICODETEXT.0)).is_err() {
             return Ok(None);
         }
-        let handle = GetClipboardData(CF_UNICODETEXT.0 as u32).map_err(|e| e.message())?;
+        let handle = GetClipboardData(u32::from(CF_UNICODETEXT.0)).map_err(|e| e.message())?;
         let global = HGLOBAL(handle.0);
         let ptr = GlobalLock(global) as *const u16;
         if ptr.is_null() {
@@ -115,7 +115,7 @@ fn alloc_global(bytes: &[u8]) -> Result<HGLOBAL, String> {
     // ロックに失敗したときは、確保したメモリを解放してから戻る。
     unsafe {
         let global = GlobalAlloc(GMEM_MOVEABLE, bytes.len()).map_err(|e| e.message())?;
-        let ptr = GlobalLock(global) as *mut u8;
+        let ptr = GlobalLock(global).cast::<u8>();
         if ptr.is_null() {
             let _ = GlobalFree(Some(global));
             return Err("メモリを確保できませんでした".to_string());
@@ -142,7 +142,7 @@ pub fn write_text(owner: Option<HWND>, text: &str, private: bool) -> Result<(), 
             items.push((unsafe { RegisterClipboardFormatW(name) }, &zero));
         }
     }
-    items.push((CF_UNICODETEXT.0 as u32, &text_bytes));
+    items.push((u32::from(CF_UNICODETEXT.0), &text_bytes));
 
     // メモリはクリップボードを空にする前に確保する。確保に失敗しても元の内容は消えない（台帳 D4）
     let mut globals = Vec::new();
@@ -246,7 +246,7 @@ mod tests {
             order.push(format);
         }
         let position = |f: u32| order.iter().position(|&x| x == f).unwrap();
-        let text = position(CF_UNICODETEXT.0 as u32);
+        let text = position(u32::from(CF_UNICODETEXT.0));
         for name in [EXCLUDE_FORMAT, HISTORY_FORMAT, CLOUD_FORMAT] {
             // SAFETY: name は w! で作った 0 終端の文字列。
             let mark = position(unsafe { RegisterClipboardFormatW(name) });

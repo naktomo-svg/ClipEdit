@@ -2,6 +2,8 @@
 # 使い方: pwsh -NoProfile -File tools/make-dist.ps1
 # build-release.ps1 で exe を作って検査し、target/dist/ClipEdit/ に配布するファイルをそろえて
 # target/dist/ClipEdit-<版>-win64.zip にまとめ、target/dist/SHA256SUMS.txt も書く。版は Cargo.toml の version。
+# 版を上げるときは、先に CHANGELOG.md の「未公開」を版と日付に書き換え、Cargo.toml の version を上げてコミットする（台帳 D39）。
+# exe の版の情報（エクスプローラーのプロパティ）は build.rs が Cargo.toml の version から作り、check-release.ps1 が確かめる。
 # 常駐中の ClipEdit が target/release/clipedit.exe を使っていると上書きできないので、先に止めておく。
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -9,7 +11,7 @@ $root = Split-Path -Parent $PSScriptRoot
 pwsh -NoProfile -File (Join-Path $PSScriptRoot 'build-release.ps1')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-$version = (Select-String -Path (Join-Path $root 'Cargo.toml') -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+$version = & (Join-Path $PSScriptRoot 'cargo-version.ps1')
 $dist = Join-Path $root 'target/dist'
 $folder = Join-Path $dist 'ClipEdit'
 $zip = Join-Path $dist "ClipEdit-$version-win64.zip"

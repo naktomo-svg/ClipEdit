@@ -53,7 +53,7 @@ pub(super) fn apply_font(edit: HWND, dpi: u32) {
             OUT_DEFAULT_PRECIS,
             CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY,
-            (FIXED_PITCH.0 | FF_MODERN.0) as u32,
+            u32::from(FIXED_PITCH.0 | FF_MODERN.0),
             w!("BIZ UDゴシック"),
         );
         SendMessageW(

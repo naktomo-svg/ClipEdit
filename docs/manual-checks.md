@@ -154,6 +154,25 @@ foreach ($f in 'ExcludeClipboardContentFromMonitorProcessing', 'CanIncludeInClip
 
 終わったら、コピーした exe のフォルダを消す。
 
+### D8-8 2026-11-22 に変えたところ（台帳 D62・D67・D39・D71）
+
+実機のテストは、メッセージを送ったときの中の動きまでしか見ない。キーとマウスで確かめる。
+
+**クリップボードを開いたままにする方法**：PowerShell を別に開いて次を貼る（20 秒の間、ほかのアプリがクリップボードに書けなくなる）。
+
+```powershell
+Add-Type -Namespace M -Name C -MemberDefinition '[DllImport("user32.dll")] public static extern bool OpenClipboard(System.IntPtr h); [DllImport("user32.dll")] public static extern bool CloseClipboard();'
+[M.C]::OpenClipboard([IntPtr]::Zero); Start-Sleep -Seconds 20; [M.C]::CloseClipboard()
+```
+
+| No | 操作 | 期待する結果 |
+|---|---|---|
+| D8-8a | 改行のない 5,000 文字を超える行をコピーして開き、Ctrl+A を押す。続けて短い文で同じことをする | どちらも全文が選ばれる |
+| D8-8b | 文（5,000 文字を超える長い行でも1回）を開いて一部を選び、上の PowerShell を実行してから 20 秒以内に Ctrl+C を押す。続けて Ctrl+X を押す | タイトルが「… - コピー失敗: 理由」「… - 切り取り失敗: 理由」になる。切り取ったところは消えない。長い行のときは「(長い行があるため折り返さずに表示)」も残る |
+| D8-8c | 20 秒たってから、もう一度 Ctrl+C を押してメモ帳に貼る。Esc で閉じてホットキーで開き直す | コピーした時点でタイトルが元に戻り、メモ帳に貼れる。開き直してもタイトルは元のまま |
+| D8-8d | エクスプローラーで `clipedit.exe` を右クリック →「プロパティ」→「詳細」 | ファイルの説明・製品名が ClipEdit、ファイルと製品のバージョンが `Cargo.toml` の版、著作権が `LICENSE` の行 |
+| D8-8e | トレイの右クリック →「お気に入り」→「お気に入りを整理…」 | `favorites` フォルダがエクスプローラーで開く（D9-4・D9-12 も同じ手順で流す） |
+
 ---
 
 ## D9 お気に入り
@@ -188,3 +207,4 @@ D7 の全項目が OK なら D7 を、D8 の全項目が OK なら D8 を、台�
 | 2026-10-19 | Windows 11 Home 10.0.26300 | ― | ― | 実機のテスト（`tools/check-all.ps1 -Hardware`。`--ignored` の 30 件と配布用ビルドの検査） | OK（30 件すべて成功、exe の検査もすべて ok） |
 | 2026-10-19 | （未実施） | （未実施） | （未実施） | D9 | 保留。手で触って確かめる項目は、まだ行っていない |
 | 2026-10-22 | Windows 11 Home 10.0.26300 | ― | ― | 実機のテスト（`tools/check-all.ps1 -Hardware`。`--ignored` の 40 件と配布用ビルドの検査。リファクタリングと監査 S29・S30・S31・S36 の対応のあと） | OK（40 件すべて成功、exe の検査もすべて ok） |
+| 2026-11-22 | Windows 11 Home 10.0.26300 | ― | ― | 実機のテスト（`tools/check-all.ps1 -Hardware`。`--ignored` の 43 件と配布用ビルドの検査。版の情報 D39 を含む）。「お気に入りを整理…」は exe に `WM_COMMAND` 121 を送り、エクスプローラーで開くことを確かめた | OK（D8-8 の手の操作はまだ） |

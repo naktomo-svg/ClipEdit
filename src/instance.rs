@@ -56,7 +56,7 @@ fn forward_with_retries(class: PCWSTR, tries: u32, wait: Duration) -> bool {
         };
         // 起動したのは利用者の操作なので、前面に出す権利を動いているほうに譲る
         let mut pid = 0u32;
-        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        GetWindowThreadProcessId(hwnd, Some(&raw mut pid));
         let _ = AllowSetForegroundWindow(pid);
         PostMessageW(Some(hwnd), WM_OPEN_REQUEST, WPARAM(0), LPARAM(0)).is_ok()
     }
@@ -120,12 +120,15 @@ mod tests {
         let mut msg = MSG::default();
         // SAFETY: msg はローカル変数。このスレッドのウィンドウへのメッセージだけを処理する。
         unsafe {
-            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-                DispatchMessageW(&msg);
+            while PeekMessageW(&raw mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                DispatchMessageW(&raw const msg);
             }
             let _ = DestroyWindow(hwnd);
         }
-        assert!(RECEIVED.with(|r| r.get()), "開く合図が届いていない");
+        assert!(
+            RECEIVED.with(std::cell::Cell::get),
+            "開く合図が届いていない"
+        );
     }
 
     #[test]

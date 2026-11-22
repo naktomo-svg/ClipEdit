@@ -17,7 +17,7 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
 if (git status --porcelain) { throw '作業ツリーに変更が残っている。コミットしてから写す' }
-$version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+$version = & (Join-Path $PSScriptRoot 'cargo-version.ps1')
 $tag = "v$version"
 if (-not (git tag --list $tag)) { throw "タグ $tag がない。版を上げてコミットし、git tag -a $tag してから写す" }
 # 公開するのは HEAD の中身。タグのあとで直してよいのは文書と道具だけで、exe に入るものは同じであること

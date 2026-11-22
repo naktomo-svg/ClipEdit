@@ -1,6 +1,6 @@
 [package]
 name = "clipedit"
-version = "0.3.6"
+version = "0.3.7"
 edition = "2024"
 license = "MIT"
 
@@ -13,6 +13,7 @@ version = "0.62"
 features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_System_Com",
     "Win32_Security",
     "Win32_System_DataExchange",
     "Win32_System_LibraryLoader",
@@ -26,3 +27,16 @@ features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ]
+
+# 台帳 D28: clippy pedantic のうち、直したものが戻らないようにする（check-all.ps1 は -D warnings で流す）。
+# 型変換の cast_possible_truncation・cast_possible_wrap・cast_sign_loss は、監査で値の範囲から問題ないと判断して受け入れている
+[lints.clippy]
+assert_is_empty = "warn"
+assigning_clones = "warn"
+borrow_as_ptr = "warn"
+cast_lossless = "warn"
+doc_markdown = "warn"
+maybe_infinite_iter = "warn"
+ptr_as_ptr = "warn"
+redundant_closure_for_method_calls = "warn"
+unnecessary_wraps = "warn"

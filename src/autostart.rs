@@ -66,7 +66,7 @@ fn read_value() -> Option<String> {
             RRF_RT_REG_SZ,
             None,
             None,
-            Some(&mut size),
+            Some(&raw mut size),
         )
         .ok()
         .ok()?;
@@ -78,7 +78,7 @@ fn read_value() -> Option<String> {
             RRF_RT_REG_SZ,
             None,
             Some(buf.as_mut_ptr().cast()),
-            Some(&mut size),
+            Some(&raw mut size),
         )
         .ok()
         .ok()?;

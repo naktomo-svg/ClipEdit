@@ -176,15 +176,16 @@ pub fn unique_name(name: &str, taken: &[String]) -> String {
     if !taken.iter().any(|t| t == name) {
         return name.to_string();
     }
-    (2..)
+    // 候補は taken.len() + 1 個あれば、どれかは taken にない
+    (2..=taken.len() + 2)
         .map(|n| format!("{name} ({n})"))
         .find(|candidate| !taken.contains(candidate))
-        .expect("無限の列から必ず見つかる")
+        .expect("taken より多い候補のどれかは空いている")
 }
 
 /// 今の内容を新しいお気に入りとして保存する。
-/// 成功なら、一覧での位置（1 から数える）と付けた名前を返す。
-pub fn add(dir: &Path, text: &str) -> Result<(usize, String), String> {
+/// 成功なら、一覧での位置（1 から数える）を返す。
+pub fn add(dir: &Path, text: &str) -> Result<usize, String> {
     if text.trim().is_empty() {
         return Err("空の内容はお気に入りに追加できません".to_string());
     }
@@ -234,12 +235,11 @@ pub fn add(dir: &Path, text: &str) -> Result<(usize, String), String> {
 
     // 保存はできているので、一覧で見つからなくても成功として返す（末尾に入った想定）
     let listing = list(dir);
-    let position = listing
+    Ok(listing
         .items
         .iter()
         .position(|f| f.name == name)
-        .map_or(listing.items.len() + 1, |p| p + 1);
-    Ok((position, name))
+        .map_or(listing.items.len() + 1, |p| p + 1))
 }
 
 /// お気に入りのフォルダをエクスプローラで開く。無ければ作る。

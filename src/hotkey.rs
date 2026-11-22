@@ -48,7 +48,7 @@ fn parse_key(key: &str) -> Result<u32, String> {
     let upper = key.to_ascii_uppercase();
     let bytes = upper.as_bytes();
     if bytes.len() == 1 && (bytes[0].is_ascii_uppercase() || bytes[0].is_ascii_digit()) {
-        return Ok(bytes[0] as u32);
+        return Ok(u32::from(bytes[0]));
     }
     if let Some(n) = upper.strip_prefix('F').and_then(|n| n.parse::<u32>().ok())
         && (1..=F_KEYS).contains(&n)

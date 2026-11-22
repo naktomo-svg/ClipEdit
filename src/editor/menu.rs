@@ -50,13 +50,13 @@ pub(super) fn create_bar(hwnd: HWND) -> windows::core::Result<HMENU> {
 impl Editor {
     /// 今の内容をお気に入りに追加し、通知の本文を返す。「残さない」印つきの内容は書かない。
     pub(super) fn add_favorite(&self, dir: &Path) -> Result<String, String> {
-        if PRIVATE.with(|p| p.get()) {
+        if PRIVATE.with(std::cell::Cell::get) {
             return Err(
                 "パスワード管理ソフトなどがコピーした内容は、お気に入りに追加できません".into(),
             );
         }
         // 名前は本文の最初の行から作るので、通知（Windows の通知の履歴に残る）には出さない（監査 S35）
-        let (n, _name) = favorites::add(dir, &self.text())?;
+        let n = favorites::add(dir, &self.text())?;
         Ok(format!("お気に入りの {n} 番に追加しました"))
     }
 

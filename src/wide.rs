@@ -42,7 +42,7 @@ mod tests {
 
     #[test]
     fn appends_terminating_nul() {
-        assert_eq!(to_wide_nul("aあ"), vec![b'a' as u16, 0x3042, 0]);
+        assert_eq!(to_wide_nul("aあ"), vec![u16::from(b'a'), 0x3042, 0]);
         assert_eq!(to_wide_nul(""), vec![0]);
     }
 
@@ -75,7 +75,10 @@ mod tests {
     fn copy_wide_fits_and_terminates() {
         let mut buf = [0xFFFFu16; 8];
         copy_wide(&mut buf, "abc");
-        assert_eq!(&buf[..4], &[b'a' as u16, b'b' as u16, b'c' as u16, 0]);
+        assert_eq!(
+            &buf[..4],
+            &[u16::from(b'a'), u16::from(b'b'), u16::from(b'c'), 0]
+        );
     }
 
     // 台帳 D35: 切るときに絵文字などのサロゲートペアの片方だけを残さない
@@ -91,7 +94,7 @@ mod tests {
     fn copy_wide_truncates_long_text() {
         let mut buf = [0xFFFFu16; 4];
         copy_wide(&mut buf, "abcdef");
-        assert_eq!(buf, [b'a' as u16, b'b' as u16, b'c' as u16, 0]);
+        assert_eq!(buf, [u16::from(b'a'), u16::from(b'b'), u16::from(b'c'), 0]);
     }
 
     // 監査 S38: 長さ 0 の入れ物でもパニックしない（書くところがないので何もしない）

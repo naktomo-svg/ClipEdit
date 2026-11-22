@@ -18,7 +18,7 @@ fn pick_icon_image(data: &[u8], size: i32) -> Option<(usize, usize)> {
         let entry = 6 + 16 * i;
         let width = match *data.get(entry)? {
             0 => 256,
-            w => w as i32,
+            w => i32::from(w),
         };
         let len = read_u32(entry + 8)? as usize;
         let offset = read_u32(entry + 12)? as usize;
@@ -61,12 +61,12 @@ pub fn icon_width(icon: HICON) -> i32 {
     // GetIconInfo が作ったビットマップ2つは、ここで破棄する（アイコンは破棄しない）。
     unsafe {
         let mut info = ICONINFO::default();
-        GetIconInfo(icon, &mut info).unwrap();
+        GetIconInfo(icon, &raw mut info).unwrap();
         let mut bitmap = BITMAP::default();
         GetObjectW(
             info.hbmColor.into(),
             std::mem::size_of::<BITMAP>() as i32,
-            Some(&mut bitmap as *mut BITMAP as *mut _),
+            Some((&raw mut bitmap).cast()),
         );
         let _ = DeleteObject(info.hbmColor.into());
         let _ = DeleteObject(info.hbmMask.into());
